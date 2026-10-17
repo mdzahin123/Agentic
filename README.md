@@ -1,118 +1,93 @@
 # Agentic Architect Challenge
 
-Three small AI programs built for the assessment. Everything is Python and uses the OpenAI API.
+Three small AI programs written in Python that use the OpenAI API.
 
 | Part | Folder | What it does |
 |---|---|---|
-| 1 | `part1_design/` | Sorts customer support emails: risky ones go to a human, safe ones get a fact-checked draft reply |
-| 2 | `part2_scraper/` | Summarizes web pages, even long or complicated ones, and never exceeds a word limit |
-| 3 | `part3_agent/` | Chat agent that answers questions about one document, remembers the conversation, and uses a calculator only when needed |
-
----
+| 1 | `part1_design/` | Sorts one customer support email: risky ones go to a human, safe ones get a fact-checked draft reply |
+| 2 | `part2_scraper/` | Summarizes a web page and keeps the summary under a word limit |
+| 3 | `part3_agent/` | Chat helper that answers questions about one document, remembers the conversation, and uses a calculator when the AI decides it needs one |
 
 ## How to run
 
-**Requirements:** Python 3.10 or newer and an OpenAI API key.
+Requirements: Python 3.10 or newer, and an OpenAI API key.
 
 ```bash
-# 1. Create and activate a virtual environment
 python -m venv .venv
-.venv\Scripts\activate            # Windows
-source .venv/bin/activate         # Mac / Linux
-
-# 2. Install dependencies
+.venv\Scripts\activate            # Windows   (Mac/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-
-# 3. Add your API key: copy .env.example to .env, then edit .env
 copy .env.example .env            # Windows   (Mac/Linux: cp .env.example .env)
-#    OPENAI_API_KEY=sk-your-key-here
+# then open .env and set OPENAI_API_KEY=sk-your-key-here
 ```
 
 | Command | What it does |
 |---|---|
-| `python check_setup.py` | Live test of all three parts with the real AI (7 tests, a few cents) |
-| `python -m pytest -q tests` | 20 offline tests, no API key needed |
-| `python part1_design/run_live.py` | Runs 5 sample emails through Part 1 |
-| `python part2_scraper/fixed_summarizer.py <url> --max-words 120` | Summarizes a web page |
-| `python part3_agent/agent.py` | Chat with the Part 3 agent (type `quit` to exit) |
+| `python check_setup.py` | Runs 7 tests of all three parts against the real AI and prints PASS or FAIL for each |
+| `python -m pytest -q tests` | Runs 20 tests with a pretend AI (no key needed, no cost) |
+| `python part1_design/run_live.py` | Runs 5 sample emails through Part 1 with the real AI |
+| `python part2_scraper/fixed_summarizer.py <web address> --max-words 120` | Summarizes a web page |
+| `python part3_agent/agent.py` | Starts the chat (type `quit` to exit) |
 
-Try this in the Part 3 chat: `Hi, I'm Danish` > `What's the refund window for annual plans?` (no calculator) > `How much is the Pro plan for a year with the annual discount?` (uses calculator, answer $144) > `What's my name?` (memory).
+Try in the chat: `Hi, I'm Danish`, then `What's the refund window for annual plans?` (answered directly), then `How much is the Pro plan for a year with the annual discount?` (uses the calculator, answer $144), then `What's my name?` (memory).
 
 ---
 
-## Part 1: Support email system
+## Part 1: Support email sorter
 
-**Pipeline** (`part1_design/support_pipeline.py`). Every email moves through these steps in order:
+Input: one email (sender, subject, message). Output: one of `human_escalation`, `human_review` or `draft_ready`.
 
-| Step | What it does | If something goes wrong |
-|---|---|---|
-| 1. Contact history | Notes who wrote and counts their emails in the last 7 days | - |
-| 2. Risk gate | Checks for data loss, service outage, security breach, or more than 3 contacts in 7 days | Sent straight to a human, no reply is drafted |
-| 3. Classify | AI labels the email Billing, Technical, Feedback or Other, with a confidence score | Low confidence or a bad answer goes to human review |
-| 4. Retrieve | Finds matching facts in the knowledge base (`kb/`, accepts `.md` and `.pdf`) | No matching facts goes to human review |
-| 5. Draft | AI writes a reply using only those facts and cites them (like `[R2]`) | - |
-| 6. Verify | Every number and citation in the reply must exist in the retrieved facts | One repair attempt, then human review |
-| 7. Result | `draft_ready`, `human_review` or `human_escalation` | - |
+1. **Counts contacts.** It remembers who wrote and when, and counts that sender's emails in the last 7 days (including the current one). This memory resets when the program stops.
+2. **Safety check (before any drafting).** Fixed rules search for lost data, a service being down, or a security breach. More than 3 contacts in 7 days also triggers it. Any hit gives `human_escalation` and no reply is written. If the rules find nothing, the AI is asked as a second opinion whether the email is critical; if it says yes, or the AI call fails, the email is escalated.
+3. **Labels the email.** The AI returns a label (Billing, Technical, Feedback or Other) and a confidence score. An unreadable answer, an unknown label or confidence under 60% gives `human_review`.
+4. **Finds facts.** It matches the email against the knowledge base in `kb/` (`.md` and `.pdf` files) by shared words. No match gives `human_review`.
+5. **Writes a reply.** The AI is told to use only those facts and to cite them (like `[R2]`).
+6. **Checks the reply.** Every number in the reply must appear in the facts, and every citation must be one of the facts provided. If not, the AI gets one chance to rewrite it. If it is still wrong, the result is `human_review`. This is what stops made-up refund rules.
+7. **Result.** If all checks pass: `draft_ready`, with the reply and the fact IDs used.
 
-**Key design choices**
-- The risk gate runs *before* any drafting, as the brief requires. It uses fixed rules, not AI, so it is predictable and explainable. An AI second opinion can add escalations but never remove one.
-- "More than 3 contacts" counts the current email, so the 4th email in 7 days escalates.
-- **Refund hallucination:** the AI only sees real policy text, must cite it, and a separate non-AI verifier rejects any number or citation that isn't in that text. No supporting facts means a human takes over.
-- Every failure (AI error, bad format, low confidence) falls back to a human, never to an automatic send.
-- Each email gets a trace ID and one structured log line (route, reasons, category).
+Each email gets a short ID and one log line (result, reasons, label).
 
-**Other files:** `openai_llm.py` connects the pipeline to OpenAI. `run_live.py` is a live demo. `kb/` holds the sample refund policy and FAQ.
+Files: `support_pipeline.py` (the logic), `openai_llm.py` (connects to OpenAI), `run_live.py` (demo), `kb/` (sample refund policy and FAQ).
 
 ## Part 2: Web page summarizer
 
-`original_script.py` is the hypothetical broken script, with its problems listed in comments. `fixed_summarizer.py` is the fix.
+Input: a web address and a word limit. `original_script.py` is the hypothetical broken script, with its problems in the comments. `fixed_summarizer.py` is the fixed version.
 
-**The bottlenecks and fixes**
-
-| Problem in the original | Fix |
+| Problem in the original | What the fixed version does |
 |---|---|
-| Raw HTML (menus, ads, scripts) sent to the AI | Extract only the article text (trafilatura, with a BeautifulSoup fallback) |
-| Long pages overflow the AI's context | Split into paragraph-aware chunks, summarize each, then combine (map-reduce) |
-| Plain `requests.get`: no timeout, retries or size limit | Timeouts, retries with backoff, 5 MB cap, content-type check |
-| JavaScript pages return an empty shell | If the text is too thin, fall back to a headless browser (optional Playwright) |
-| Nothing enforces "keep it short" | **Guardrail:** count words, ask the AI to condense (up to 2 times), then cut at a sentence boundary so the limit always holds |
+| Whole messy page given to the AI | Keeps only the article text (menus, ads, hidden code removed) |
+| Long pages did not fit | Cuts the text into pieces at paragraph breaks (at most 40 pieces), summarizes each, then combines the summaries |
+| Careless download | Time limits, retries on temporary website errors, stops reading after 5 MB, checks it is a web page |
+| Pages that fill in content after opening came back empty | If almost no text is found, tries a hidden browser. This needs the optional Playwright add-on (see below) and has not been tested |
+| Nothing enforced a short summary | **Length guardrail:** counts words; if too long, asks the AI to shorten it (up to 2 times); if still too long, the code cuts it at a sentence ending. An empty summary is never returned |
 
-## Part 3: Document chat agent
+Optional add-on for the hidden browser: `pip install playwright` then `playwright install chromium`.
 
-`part3_agent/agent.py` is a loop built on raw OpenAI tool-calling (no framework). The document is `sample_doc.md`, a made-up hosting company's plans and policies.
+## Part 3: Document chat helper
 
-1. Your message is added to the conversation list.
-2. The whole list plus the document goes to the AI.
-3. The AI either answers directly, or asks to use the calculator.
-4. If it asks, the code runs the calculator, adds the result to the list, and asks the AI again.
+Answers from `sample_doc.md` (a made-up hosting company's plans and policies).
 
-- **Memory:** the AI forgets between calls, so the full conversation is sent every time. It is also saved to `memory.json` so it survives restarts. Very old messages are trimmed.
-- **Tool use:** the *AI* decides whether to call the calculator. Its description limits it to real arithmetic.
-- **Safety:** the calculator parses maths safely and never uses `eval()`. A maximum of 5 steps prevents endless loops. Tool errors are returned to the AI so it can recover, and an API failure doesn't crash the chat.
+- **Memory:** all messages are kept in a list and sent to the AI every time. The list is saved to `memory.json` so it survives restarts, and only the latest 30 messages are kept. Delete `memory.json` to start fresh.
+- **Calculator:** the AI decides whether to use it, and the code runs it only when asked. It accepts basic maths (add, subtract, multiply, divide, powers, remainder) and refuses anything else.
+- **Loop:** after the calculator runs, its result goes back to the AI, which writes the final answer. It stops after at most 5 rounds.
+- **Errors:** a failed AI request prints a message and the chat continues. A calculator error is passed back to the AI.
 
----
+## Tests
 
-## Trade-offs and failure handling
+- `tests/` has 20 tests that use a pretend AI. They cover the safety check running before drafting, the 4th-email rule, blocking made-up refund numbers, PDF loading, text splitting, the summary length guardrail, calculator safety, the AI-decides tool loop, memory, and the 5-round limit.
+- `check_setup.py` runs 7 tests against the real AI.
 
-| Choice | Benefit | Cost / mitigation |
-|---|---|---|
-| Rule-based risk gate | Fast, auditable, never skipped | Some false alarms; over-escalating is safer than missing an outage |
-| Strict number-matching verifier | Hard guarantee on refund facts | Rejects valid paraphrases ("two weeks"), so they go to a human |
-| Whole document in the prompt (Part 3) | Simple, no retrieval errors | Doesn't scale to big documents; use retrieval for those |
-| Simple word-overlap search (Part 1) | No extra dependencies | Lower recall; production should use embeddings |
-| In-memory contact history | Easy to test | Resets on restart; production should use a database |
+## Trade-offs and known limits
 
-| Failure | Handling |
-|---|---|
-| AI timeout or 5xx error | Retries with backoff, then falls back to a human |
-| Malformed AI output | Validated, then human review |
-| Prompt injection in an email | Email is treated as data; the verifier is independent of the AI |
-| Heavy load | Not implemented in code; the design is stateless workers behind a queue with per-sender rate limits |
-| Out-of-date knowledge base | Draft records which facts it used, so re-indexing is traceable |
+- The safety check uses fixed rules, so it is predictable but may flag emails that are not urgent.
+- The fact-checker is strict: a reply that rewords a number (for example "two weeks" instead of "14 days") is rejected and goes to a human.
+- Part 1 finds facts by shared words, which is simple but finds fewer matches than smarter search.
+- Part 1 does not send emails; it only produces a result and a draft.
+- If the OpenAI call fails while writing or rewriting the reply (steps 5 and 6), the error is not caught and that email stops with an error. Failures in the safety check and labelling steps are handled.
+- The contact history is not saved when the program stops.
+- Part 3 gives the whole document to the AI, which works for one short document but not for large ones.
+- The hidden-browser fallback in Part 2 is untested.
 
-**Testing and monitoring:** 20 offline tests with a mocked AI cover gate ordering, the 4th-contact rule, hallucination blocking, PDF loading, chunking, the length guardrail, tool decisions, memory and the step limit. Part 1 logs a trace per email; useful metrics would be escalation rate, verifier-rejection rate and p95 latency.
-
-## Project layout
+## Layout
 ```
 part1_design/   support_pipeline.py, openai_llm.py, run_live.py, kb/
 part2_scraper/  original_script.py, fixed_summarizer.py
